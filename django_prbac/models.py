@@ -3,6 +3,7 @@ import weakref
 
 from django import VERSION
 from django.contrib.postgres.indexes import GinIndex
+from django.core.cache import cache
 from django.db import models
 from django.conf import settings
 if VERSION[0] < 3:
@@ -74,24 +75,47 @@ class Role(ValidatingModel, models.Model):
     # Methods
     # -------
 
+    def get_privilege_cache_key(self, slug: str, assignment: dict) -> str:
+        """
+        """
+        return f'prbac-grant:{self.slug}->{slug}:{assignment}'
+
     def check_privilege(self, slug: str, assignment: dict):
         """
         Refactored to try out a recursive version using JSONField lookups
         :param privilege:
         :return:
         """
+
+        # We can cache individual permission checks instead of the entire lookup table
+        # We also cache results in a shared cache instead of in-memory
+        key = self.get_privilege_cache_key(slug, assignment)
+        res = cache.get(key, None)
+        if res is not None:
+            return res
+
+        # default is permission-denied
         res = False
+
+        # recurse through all granted memberships that include any part of the assignment
         grants = self.memberships_granted.\
             select_related().filter(assignment__contained_by=assignment)
 
         for g in grants:
-            print('checking', g.to_role.slug, g.assignment)
+
+            # If this grant exactly matches, break out and return True
             if g.to_role.slug == slug and g.assignment == assignment:
                 res = True
                 break
             else:
-                res = g.to_role.check_privilege(slug, assignment)
 
+                # recurse down the tree of grants
+                res = g.to_role.check_privilege(slug, assignment)
+                if res is True:
+                    break
+
+        # cache the result for future checks
+        cache.set(key, res, 60)
         return res
 
     @classmethod
