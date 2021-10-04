@@ -2,6 +2,7 @@ import time
 import weakref
 
 from django import VERSION
+from django.contrib.postgres.indexes import GinIndex
 from django.db import models
 from django.conf import settings
 if VERSION[0] < 3:
@@ -72,6 +73,26 @@ class Role(ValidatingModel, models.Model):
 
     # Methods
     # -------
+
+    def check_privilege(self, slug: str, assignment: dict):
+        """
+        Refactored to try out a recursive version using JSONField lookups
+        :param privilege:
+        :return:
+        """
+        res = False
+        grants = self.memberships_granted.\
+            select_related().filter(assignment__contained_by=assignment)
+
+        for g in grants:
+            print('checking', g.to_role.slug, g.assignment)
+            if g.to_role.slug == slug and g.assignment == assignment:
+                res = True
+                break
+            else:
+                res = g.to_role.check_privilege(slug, assignment)
+
+        return res
 
     @classmethod
     def get_cache(cls):
@@ -144,7 +165,7 @@ class Role(ValidatingModel, models.Model):
             except AttributeError:
                 pass
         return [membership.instantiated_to_role(assignment)
-                for membership in self.memberships_granted.all()]
+                for membership in self.memberships_granted.filter(assignment__contains=assignment)]
 
     def instantiate(self, assignment):
         """
@@ -215,6 +236,9 @@ class Grant(ValidatingModel, models.Model):
 
     class Meta:
         app_label = 'django_prbac'
+        indexes = [
+            GinIndex(fields=['assignment'])
+        ]
 
     # Methods
     # -------
@@ -294,6 +318,8 @@ class RoleInstance(object):
         True if this instantiated role is allowed the privilege passed in,
         (which is itself an RoleInstance)
         """
+
+        print(self.name, self.assignment, privilege)
 
         if self == privilege:
             return True
