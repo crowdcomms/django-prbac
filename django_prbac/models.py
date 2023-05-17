@@ -6,6 +6,9 @@ from django.contrib.postgres.indexes import GinIndex
 from django.core.cache import cache
 from django.db import models
 from django.conf import settings
+import json, hashlib
+from django_prbac.cache import RoleCache
+
 if VERSION[0] < 3:
     from django.utils.encoding import python_2_unicode_compatible
 else:
@@ -13,7 +16,13 @@ else:
         return fn
 
 from django_prbac.fields import StringSetField
-from django_jsonfield_backport.models import JSONField
+
+try:
+    from django.db.models import JSONField
+except (ImportError, AttributeError):
+    from django_jsonfield_backport.models import JSONField
+
+CACHE_TIMEOUT = getattr(settings, 'DJANGO_PRBAC_CACHE_TIMEOUT', 60)
 
 
 __all__ = [
@@ -77,13 +86,20 @@ class Role(ValidatingModel, models.Model):
 
     def get_privilege_cache_key(self, slug: str, assignment: dict) -> str:
         """
+        Generate a cache key to determine the result of a permission check from this role 
+        to the given role + assignment
         """
-        return f'prbac-grant:{self.slug}->{slug}:{assignment}'
+        encoded = json.dumps(assignment, sort_keys=True).encode()
+        dhash = hashlib.md5(encoded)
+        return f'prbac-grant:{self.slug}->{slug}:{dhash.hexdigest()}'
 
     def check_privilege(self, slug: str, assignment: dict):
         """
         Refactored to try out a recursive version using JSONField lookups
         :param privilege:
+            The role we wish to check whether we have a grant to
+        :param assignment:
+            Specific assigments to check in the grant
         :return:
         """
 
@@ -115,7 +131,7 @@ class Role(ValidatingModel, models.Model):
                     break
 
         # cache the result for future checks
-        cache.set(key, res, 60)
+        cache.set(key, res, CACHE_TIMEOUT)
         return res
 
     @classmethod
@@ -123,26 +139,26 @@ class Role(ValidatingModel, models.Model):
         try:
             cache = cls.cache
         except AttributeError:
-            timeout = getattr(settings, 'DJANGO_PRBAC_CACHE_TIMEOUT', 60)
-            cache = cls.cache = DictCache(timeout)
+            cache = cls.cache = RoleCache(CACHE_TIMEOUT)
         return cache
 
     @classmethod
     def update_cache(cls):
-        roles = cls.objects.prefetch_related('memberships_granted').all()
-        roles = {role.id: role for role in roles}
-        for role in roles.values():
-            role._granted_privileges = privileges = []
-            # Prevent extra queries by manually linking grants and roles
-            # because Django 1.6 isn't smart enough to do this for us
-            for membership in role.memberships_granted.all():
-                membership.to_role = roles[membership.to_role_id]
-                membership.from_role = roles[membership.from_role_id]
-                privileges.append(membership.instantiated_to_role({}))
-        cache = cls.get_cache()
-        cache.set(cls.ROLES_BY_ID, roles)
-        cache.set(cls.PRIVILEGES_BY_SLUG,
-            {role.slug: role.instantiate({}) for role in roles.values()})
+        pass
+        # roles = cls.objects.prefetch_related('memberships_granted').all()
+        # roles = {role.id: role for role in roles}
+        # for role in roles.values():
+        #     role._granted_privileges = privileges = []
+        #     # Prevent extra queries by manually linking grants and roles
+        #     # because Django 1.6 isn't smart enough to do this for us
+        #     for membership in role.memberships_granted.all():
+        #         membership.to_role = roles[membership.to_role_id]
+        #         membership.from_role = roles[membership.from_role_id]
+        #         privileges.append(membership.instantiated_to_role({}))
+        # cache = cls.get_cache()
+        # cache.set(cls.ROLES_BY_ID, roles)
+        # cache.set(cls.PRIVILEGES_BY_SLUG,
+        #     {role.slug: role.instantiate({}) for role in roles.values()})
 
     @classmethod
     def get_privilege(cls, slug, assignment=None):
@@ -152,12 +168,12 @@ class Role(ValidatingModel, models.Model):
         This optimization is specifically geared toward cases where
         `assignments` is empty.
         """
-        cache = cls.get_cache()
-        if cache.disabled:
-            roles = Role.objects.filter(slug=slug)
-            if roles:
-                return roles[0].instantiate(assignment or {})
-            return None
+        # cache = cls.get_cache()
+        # if cache.disabled:
+        roles = Role.objects.filter(slug=slug)
+        if roles:
+            return roles[0].instantiate(assignment or {})
+        return None
         privileges = cache.get(cls.PRIVILEGES_BY_SLUG)
         if privileges is None:
             cls.update_cache()
@@ -173,14 +189,14 @@ class Role(ValidatingModel, models.Model):
         """
         Optimized lookup of role by id
         """
-        cache = self.get_cache()
-        if cache.disabled:
-            return self
-        roles = cache.get(self.ROLES_BY_ID)
-        if roles is None or self.id not in roles:
-            self.update_cache()
-            roles = cache.get(self.ROLES_BY_ID)
-        return roles.get(self.id, self)
+        # cache = self.get_cache()
+        # if cache.disabled:
+        return self
+        # roles = cache.get(self.ROLES_BY_ID)
+        # if roles is None or self.id not in roles:
+        #     self.update_cache()
+        #     roles = cache.get(self.ROLES_BY_ID)
+        # return roles.get(self.id, self)
 
     def get_privileges(self, assignment):
         if not assignment:
@@ -342,8 +358,6 @@ class RoleInstance(object):
         True if this instantiated role is allowed the privilege passed in,
         (which is itself an RoleInstance)
         """
-
-        print(self.name, self.assignment, privilege)
 
         if self == privilege:
             return True

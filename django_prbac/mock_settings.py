@@ -9,8 +9,15 @@ DEBUG = True
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': 'django-prbac.db',
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'django-prbac',
+        'USER': 'postgres',
+        'PASSWORD': 'postgres',
+        'HOST': 'localhost',
+        'PORT': 5432,
+        'TEST': {
+            'NAME': 'django-prbac-test'
+        }
     }
 }
 
