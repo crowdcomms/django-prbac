@@ -145,20 +145,6 @@ class Role(ValidatingModel, models.Model):
     @classmethod
     def update_cache(cls):
         pass
-        # roles = cls.objects.prefetch_related('memberships_granted').all()
-        # roles = {role.id: role for role in roles}
-        # for role in roles.values():
-        #     role._granted_privileges = privileges = []
-        #     # Prevent extra queries by manually linking grants and roles
-        #     # because Django 1.6 isn't smart enough to do this for us
-        #     for membership in role.memberships_granted.all():
-        #         membership.to_role = roles[membership.to_role_id]
-        #         membership.from_role = roles[membership.from_role_id]
-        #         privileges.append(membership.instantiated_to_role({}))
-        # cache = cls.get_cache()
-        # cache.set(cls.ROLES_BY_ID, roles)
-        # cache.set(cls.PRIVILEGES_BY_SLUG,
-        #     {role.slug: role.instantiate({}) for role in roles.values()})
 
     @classmethod
     def get_privilege(cls, slug, assignment=None):
@@ -189,14 +175,7 @@ class Role(ValidatingModel, models.Model):
         """
         Optimized lookup of role by id
         """
-        # cache = self.get_cache()
-        # if cache.disabled:
         return self
-        # roles = cache.get(self.ROLES_BY_ID)
-        # if roles is None or self.id not in roles:
-        #     self.update_cache()
-        #     roles = cache.get(self.ROLES_BY_ID)
-        # return roles.get(self.id, self)
 
     def get_privileges(self, assignment):
         if not assignment:

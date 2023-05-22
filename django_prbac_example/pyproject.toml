@@ -1,0 +1,31 @@
+[tool.poetry]
+name = "django-prbac-example"
+version = "0.1.0"
+description = ""
+authors = ["Ben Harling <bharling@crowdcomms.co.uk>"]
+readme = "README.md"
+packages = [{include = "django_prbac_example"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+django = "<4.0"
+djangorestframework = "^3.14.0"
+django-prbac = {path = "..", develop = true}
+psycopg2 = "^2.9.6"
+
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.3.1"
+ipython = "^8.13.2"
+pytest-django = "^4.5.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+
+# -- Example FILE: pyproject.toml
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "django_prbac_example.settings"
+# -- recommended but optional:
+python_files = ["test_*.py", "*_test.py", "testing/python/*.py"]
