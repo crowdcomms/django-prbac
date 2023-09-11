@@ -2,17 +2,27 @@ import time
 import weakref
 
 from django import VERSION
+from django.contrib.postgres.indexes import GinIndex
+from django.core.cache import cache
 from django.db import models
 from django.conf import settings
+import json, hashlib
+from django_prbac.cache import RoleCache
+
 if VERSION[0] < 3:
     from django.utils.encoding import python_2_unicode_compatible
 else:
     def python_2_unicode_compatible(fn):
         return fn
 
-import jsonfield
-
 from django_prbac.fields import StringSetField
+
+try:
+    from django.db.models import JSONField
+except (ImportError, AttributeError):
+    from django_jsonfield_backport.models import JSONField
+
+CACHE_TIMEOUT = getattr(settings, 'DJANGO_PRBAC_CACHE_TIMEOUT', 60)
 
 
 __all__ = [
@@ -74,31 +84,67 @@ class Role(ValidatingModel, models.Model):
     # Methods
     # -------
 
+    def get_privilege_cache_key(self, slug: str, assignment: dict) -> str:
+        """
+        Generate a cache key to determine the result of a permission check from this role 
+        to the given role + assignment
+        """
+        encoded = json.dumps(assignment, sort_keys=True).encode()
+        dhash = hashlib.md5(encoded)
+        return f'prbac-grant:{self.slug}->{slug}:{dhash.hexdigest()}'
+
+    def check_privilege(self, slug: str, assignment: dict):
+        """
+        Refactored to try out a recursive version using JSONField lookups
+        :param privilege:
+            The role we wish to check whether we have a grant to
+        :param assignment:
+            Specific assigments to check in the grant
+        :return:
+        """
+
+        # We can cache individual permission checks instead of the entire lookup table
+        # We also cache results in a shared cache instead of in-memory
+        key = self.get_privilege_cache_key(slug, assignment)
+        res = cache.get(key, None)
+        if res is not None:
+            return res
+
+        # default is permission-denied
+        res = False
+
+        # recurse through all granted memberships that include any part of the assignment
+        grants = self.memberships_granted.\
+            select_related().filter(assignment__contained_by=assignment)
+
+        for g in grants:
+
+            # If this grant exactly matches, break out and return True
+            if g.to_role.slug == slug and g.assignment == assignment:
+                res = True
+                break
+            else:
+
+                # recurse down the tree of grants
+                res = g.to_role.check_privilege(slug, assignment)
+                if res is True:
+                    break
+
+        # cache the result for future checks
+        cache.set(key, res, CACHE_TIMEOUT)
+        return res
+
     @classmethod
     def get_cache(cls):
         try:
             cache = cls.cache
         except AttributeError:
-            timeout = getattr(settings, 'DJANGO_PRBAC_CACHE_TIMEOUT', 60)
-            cache = cls.cache = DictCache(timeout)
+            cache = cls.cache = RoleCache(CACHE_TIMEOUT)
         return cache
 
     @classmethod
     def update_cache(cls):
-        roles = cls.objects.prefetch_related('memberships_granted').all()
-        roles = {role.id: role for role in roles}
-        for role in roles.values():
-            role._granted_privileges = privileges = []
-            # Prevent extra queries by manually linking grants and roles
-            # because Django 1.6 isn't smart enough to do this for us
-            for membership in role.memberships_granted.all():
-                membership.to_role = roles[membership.to_role_id]
-                membership.from_role = roles[membership.from_role_id]
-                privileges.append(membership.instantiated_to_role({}))
-        cache = cls.get_cache()
-        cache.set(cls.ROLES_BY_ID, roles)
-        cache.set(cls.PRIVILEGES_BY_SLUG,
-            {role.slug: role.instantiate({}) for role in roles.values()})
+        pass
 
     @classmethod
     def get_privilege(cls, slug, assignment=None):
@@ -108,12 +154,12 @@ class Role(ValidatingModel, models.Model):
         This optimization is specifically geared toward cases where
         `assignments` is empty.
         """
-        cache = cls.get_cache()
-        if cache.disabled:
-            roles = Role.objects.filter(slug=slug)
-            if roles:
-                return roles[0].instantiate(assignment or {})
-            return None
+        # cache = cls.get_cache()
+        # if cache.disabled:
+        roles = Role.objects.filter(slug=slug)
+        if roles:
+            return roles[0].instantiate(assignment or {})
+        return None
         privileges = cache.get(cls.PRIVILEGES_BY_SLUG)
         if privileges is None:
             cls.update_cache()
@@ -129,14 +175,7 @@ class Role(ValidatingModel, models.Model):
         """
         Optimized lookup of role by id
         """
-        cache = self.get_cache()
-        if cache.disabled:
-            return self
-        roles = cache.get(self.ROLES_BY_ID)
-        if roles is None or self.id not in roles:
-            self.update_cache()
-            roles = cache.get(self.ROLES_BY_ID)
-        return roles.get(self.id, self)
+        return self
 
     def get_privileges(self, assignment):
         if not assignment:
@@ -145,7 +184,7 @@ class Role(ValidatingModel, models.Model):
             except AttributeError:
                 pass
         return [membership.instantiated_to_role(assignment)
-                for membership in self.memberships_granted.all()]
+                for membership in self.memberships_granted.filter(assignment__contains=assignment)]
 
     def instantiate(self, assignment):
         """
@@ -208,7 +247,7 @@ class Grant(ValidatingModel, models.Model):
         on_delete=models.CASCADE,
     )
 
-    assignment = jsonfield.JSONField(
+    assignment = JSONField(
         help_text='Assignment from parameters (strings) to values (any JSON-compatible value)',
         blank=True,
         default=dict,
@@ -216,6 +255,9 @@ class Grant(ValidatingModel, models.Model):
 
     class Meta:
         app_label = 'django_prbac'
+        indexes = [
+            GinIndex(fields=['assignment'])
+        ]
 
     # Methods
     # -------
